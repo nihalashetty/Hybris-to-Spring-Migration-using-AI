@@ -24,6 +24,8 @@ import subprocess
 from pathlib import Path
 from typing import List, Dict
 from time import sleep
+import time
+import random
 from jinja2 import Template
 from tqdm import tqdm
 
@@ -44,8 +46,9 @@ EMBED_MODEL = "all-MiniLM-L6-v2"
 CHROMA_DIRNAME = "chroma_db"
 PACKAGE_ROOT = "com.company.migrated"
 RETRIEVE_K = 12
-GEN_MAX_TOKENS = 3000
+GEN_MAX_TOKENS = 16000  # Further increased to handle complete responses
 GEN_TEMPERATURE = 0.0
+MAX_PROMPT_SIZE = 50000  # Maximum prompt size before compression
 MAX_REPAIR_ITERS = 3
 MVN_CMD = ["mvn", "-DskipTests", "package"]
 # ----------------------------------------
@@ -66,7 +69,7 @@ class GeminiClient:
             "Content-Type": "application/json",
         })
 
-    def generate(self, prompt: str, max_tokens: int = GEN_MAX_TOKENS, temperature: float = GEN_TEMPERATURE, timeout: int = 120):
+    def generate(self, prompt: str, max_tokens: int = GEN_MAX_TOKENS, temperature: float = GEN_TEMPERATURE, timeout: int = 120, max_retries: int = 3):
         payload = {
             "contents": [{
                 "parts": [{
@@ -78,7 +81,25 @@ class GeminiClient:
                 "temperature": temperature
             }
         }
-        return self._call_api(payload, timeout=timeout)
+        
+        # Rate limiting: add small delay for small projects, larger for big ones
+        delay = random.uniform(0.1, 0.5)  # Reduced from 0.5-2.0
+        logging.info("Rate limiting: sleeping for %.2f seconds", delay)
+        sleep(delay)
+        
+        # Retry logic with exponential backoff
+        for attempt in range(max_retries):
+            try:
+                return self._call_api(payload, timeout=timeout)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    backoff_delay = (2 ** attempt) + random.uniform(0, 1)
+                    logging.warning("API call failed (attempt %d/%d), retrying in %.2f seconds: %s", 
+                                  attempt + 1, max_retries, backoff_delay, str(e))
+                    sleep(backoff_delay)
+                else:
+                    logging.error("API call failed after %d attempts: %s", max_retries, str(e))
+                    raise
 
     def _call_api(self, payload: Dict, timeout: int = 120):
         """
@@ -98,12 +119,23 @@ class GeminiClient:
             candidates = data["candidates"]
             if candidates and len(candidates) > 0:
                 candidate = candidates[0]
+                
+                # Check for token limit issues
+                if candidate.get("finishReason") == "MAX_TOKENS":
+                    logging.error("Gemini hit MAX_TOKENS limit, response is truncated! This will cause incomplete generation.")
+                
                 if "content" in candidate and "parts" in candidate["content"]:
                     parts = candidate["content"]["parts"]
                     if parts and len(parts) > 0:
-                        return parts[0].get("text", "")
+                        text = parts[0].get("text", "")
+                        if text:
+                            return text
+                        else:
+                            logging.warning("Empty response text from Gemini")
+                            return ""
         
         # fallback: return raw body
+        logging.warning("Could not parse Gemini response, returning raw text")
         return resp.text
 
 # ---------------- Helpers ----------------
@@ -134,6 +166,260 @@ def retrieve_snippets(coll, query: str, n: int = RETRIEVE_K):
         logging.warning("Chroma retrieval failed: %s", e)
         return []
 
+def filter_relevant_snippets(snippets: List[Dict], cluster_files: List[str], max_snippets: int = 8):
+    """
+    Filter snippets to only include those directly relevant to cluster files.
+    This reduces prompt size and improves generation quality.
+    """
+    if len(snippets) <= max_snippets:
+        return snippets
+    
+    relevant_snippets = []
+    cluster_file_paths = set(cluster_files)
+    
+    # First pass: exact matches with cluster files
+    for snippet in snippets:
+        meta = snippet.get("meta", {})
+        path = meta.get("path", "")
+        if any(cluster_file in path for cluster_file in cluster_file_paths):
+            relevant_snippets.append(snippet)
+            if len(relevant_snippets) >= max_snippets:
+                break
+    
+    # Second pass: if we need more, include by class/method relevance
+    if len(relevant_snippets) < max_snippets:
+        remaining = [s for s in snippets if s not in relevant_snippets]
+        # Sort by document length (longer = more detailed)
+        remaining.sort(key=lambda x: len(x.get("doc", "")), reverse=True)
+        needed = max_snippets - len(relevant_snippets)
+        relevant_snippets.extend(remaining[:needed])
+    
+    logging.info("Filtered %d snippets down to %d most relevant", len(snippets), len(relevant_snippets))
+    return relevant_snippets
+
+def compress_prompt(prompt: str, max_size: int) -> str:
+    """
+    Compress a prompt to fit within the maximum size limit.
+    Prioritizes keeping instructions and file summaries, compresses snippets.
+    """
+    import re
+    
+    if len(prompt) <= max_size:
+        return prompt
+    
+    # Split prompt into sections
+    sections = re.split(r'(Instructions:|Relevant code snippets:|Cluster ID:)', prompt)
+    
+    # Keep instructions and cluster info (usually first parts)
+    compressed_parts = []
+    current_size = 0
+    instructions_kept = False
+    
+    for i, section in enumerate(sections):
+        section_size = len(section)
+        
+        # Always keep instructions and cluster info
+        if "Instructions:" in section or "Cluster ID:" in section or not instructions_kept:
+            if current_size + section_size <= max_size * 0.6:  # Reserve 60% for snippets
+                compressed_parts.append(section)
+                current_size += section_size
+                if "Instructions:" in section:
+                    instructions_kept = True
+            continue
+            
+        # Compress snippet sections
+        if "SNIPPET PATH:" in section:
+            # Extract only essential parts: class definitions, method signatures
+            lines = section.split('\n')
+            compressed_lines = []
+            in_snippet = False
+            
+            for line in lines:
+                if 'SNIPPET PATH:' in line:
+                    compressed_lines.append(line)
+                    in_snippet = True
+                elif in_snippet:
+                    # Keep only essential lines
+                    if (line.strip().startswith('public ') or 
+                        line.strip().startswith('class ') or
+                        line.strip().startswith('interface ') or
+                        line.strip().startswith('@') or
+                        '}' in line or '{' in line):
+                        compressed_lines.append(line)
+                    elif len(compressed_lines) < 30:  # Limit implementation details
+                        compressed_lines.append(line)
+            
+            compressed_section = '\n'.join(compressed_lines[:50])  # Limit to 50 lines per snippet
+            if current_size + len(compressed_section) <= max_size:
+                compressed_parts.append(compressed_section)
+                current_size += len(compressed_section)
+        else:
+            # For other sections, truncate if needed
+            if current_size + section_size <= max_size:
+                compressed_parts.append(section)
+                current_size += section_size
+            else:
+                remaining = max_size - current_size
+                if remaining > 100:  # Only add if meaningful space left
+                    compressed_parts.append(section[:remaining])
+                break
+    
+    result = ''.join(compressed_parts)
+    logging.info("Compressed prompt from %d to %d chars (%.1f%% reduction)", 
+                len(prompt), len(result), (1 - len(result)/len(prompt)) * 100)
+    return result
+
+def generate_cluster_hierarchically(cluster: Dict, cluster_id: int, summaries: Dict, snippets: List[Dict], gemini: GeminiClient):
+    """
+    Generate files for a cluster using hierarchical approach:
+    1. Generate core services first
+    2. Generate controllers using core services
+    3. Generate models/DTOs
+    """
+    logging.info("Starting hierarchical generation for cluster %s", cluster_id)
+    
+    all_generated_files = []
+    
+    # Phase 1: Generate core services (ProductService, CartService, etc.)
+    service_files = generate_core_services(cluster, cluster_id, summaries, snippets, gemini)
+    all_generated_files.extend(service_files)
+    
+    # Phase 2: Generate models/DTOs
+    model_files = generate_models(cluster, cluster_id, summaries, snippets, gemini, service_files)
+    all_generated_files.extend(model_files)
+    
+    # Phase 3: Generate controllers using services and models
+    controller_files = generate_controllers(cluster, cluster_id, summaries, snippets, gemini, service_files + model_files)
+    all_generated_files.extend(controller_files)
+    
+    # Phase 4: Generate main application class if this is cluster 0
+    if cluster_id == 0:
+        main_app_file = generate_main_application(cluster_id, gemini)
+        if main_app_file:
+            all_generated_files.append(main_app_file)
+    
+    logging.info("Hierarchical generation complete for cluster %s: %d files generated", cluster_id, len(all_generated_files))
+    return all_generated_files
+
+def generate_core_services(cluster: Dict, cluster_id: int, summaries: Dict, snippets: List[Dict], gemini: GeminiClient):
+    """Generate core service classes (ProductService, CartService, etc.)"""
+    logging.info("🔧 Generating core services for cluster %s", cluster_id)
+    
+    # Filter snippets to service-related files
+    service_snippets = [s for s in snippets if 'service' in s.get('meta', {}).get('path', '').lower()]
+    
+    prompt = f"""Generate ONLY the core service classes for cluster {cluster_id}.
+
+Focus on:
+- Service interfaces and implementations
+- Business logic methods
+- Data access patterns
+
+Generate files in this format:
+// FILE: src/main/java/com/company/migrated/cluster_{cluster_id}/service/ServiceName.java
+[Service code]
+
+Do not generate controllers or models yet."""
+    
+    # Add relevant snippets
+    for s in service_snippets[:4]:  # Limit to 4 service snippets
+        prompt += f"\n-- SNIPPET: {s.get('meta', {}).get('path', '')}\n{s.get('doc', '')[:3000]}\n"
+    
+    try:
+        response = gemini.generate(prompt, max_tokens=4000)
+        files, _ = parse_generated_files(response)
+        logging.info("Generated %d service files", len(files))
+        return files
+    except Exception as e:
+        logging.error("Failed to generate services: %s", e)
+        return []
+
+def generate_models(cluster: Dict, cluster_id: int, summaries: Dict, snippets: List[Dict], gemini: GeminiClient, existing_files: List):
+    """Generate model/DTO classes"""
+    logging.info("Generating models/DTOs for cluster %s", cluster_id)
+    
+    prompt = f"""Generate ONLY the model/DTO classes for cluster {cluster_id}.
+
+Focus on:
+- Data transfer objects (DTOs)
+- Entity classes
+- Value objects
+
+Generate files in this format:
+// FILE: src/main/java/com/company/migrated/cluster_{cluster_id}/model/ModelName.java
+[Model code]
+
+Existing service files context:
+{str(existing_files)[:1000]}"""
+    
+    try:
+        response = gemini.generate(prompt, max_tokens=3000)
+        files, _ = parse_generated_files(response)
+        logging.info("Generated %d model files", len(files))
+        return files
+    except Exception as e:
+        logging.error("Failed to generate models: %s", e)
+        return []
+
+def generate_controllers(cluster: Dict, cluster_id: int, summaries: Dict, snippets: List[Dict], gemini: GeminiClient, existing_files: List):
+    """Generate controller classes using existing services and models"""
+    logging.info("🎮 Generating controllers for cluster %s", cluster_id)
+    
+    # Filter snippets to controller-related files
+    controller_snippets = [s for s in snippets if 'controller' in s.get('meta', {}).get('path', '').lower()]
+    
+    prompt = f"""Generate ONLY the controller classes for cluster {cluster_id}.
+
+Focus on:
+- REST controllers with @RestController
+- HTTP endpoint mappings
+- Proper dependency injection
+- Integration with existing services
+
+Generate files in this format:
+// FILE: src/main/java/com/company/migrated/cluster_{cluster_id}/controller/ControllerName.java
+[Controller code]
+
+Existing files context:
+{str(existing_files)[:1500]}"""
+    
+    # Add controller snippets
+    for s in controller_snippets[:4]:
+        prompt += f"\n-- SNIPPET: {s.get('meta', {}).get('path', '')}\n{s.get('doc', '')[:3000]}\n"
+    
+    try:
+        response = gemini.generate(prompt, max_tokens=4000)
+        files, _ = parse_generated_files(response)
+        logging.info("Generated %d controller files", len(files))
+        return files
+    except Exception as e:
+        logging.error("Failed to generate controllers: %s", e)
+        return []
+
+def generate_main_application(cluster_id: int, gemini: GeminiClient):
+    """Generate the main Spring Boot application class"""
+    logging.info("Generating main application class for cluster %s", cluster_id)
+    
+    prompt = f"""Generate ONLY the main Spring Boot application class for cluster {cluster_id}.
+
+Generate this file:
+// FILE: src/main/java/com/company/migrated/cluster_{cluster_id}/MigratedApplication.java
+
+The class should:
+- Have @SpringBootApplication annotation
+- Have a main method that starts SpringApplication
+- Be in package com.company.migrated.cluster_{cluster_id}"""
+    
+    try:
+        response = gemini.generate(prompt, max_tokens=1000)
+        files, _ = parse_generated_files(response)
+        if files:
+            logging.info("Generated main application class")
+            return files[0]
+    except Exception as e:
+        logging.error("Failed to generate main application: %s", e)
+    return None
+
 def make_cluster_prompt(cluster: Dict, cluster_id: int, summaries: Dict, snippets: List[Dict]):
     """
     Build a robust prompt for Gemini from cluster structural facts + retrieved snippets.
@@ -159,12 +445,25 @@ def make_cluster_prompt(cluster: Dict, cluster_id: int, summaries: Dict, snippet
             file_summaries.append(f"{f} -> classes: {classes}")
     file_summaries_text = "\n".join(file_summaries[:200])
 
-    # prepare snippets block
+    # prepare snippets block with compression if needed
     snippet_block = ""
     for s in snippets:
         meta = s.get("meta", {})
         path = meta.get("path", "<unknown>")
-        snippet = s.get("doc", "")[:6000]  # Increased context
+        snippet = s.get("doc", "")
+        
+        # Compress snippet if it's too long
+        if len(snippet) > 8000:
+            # Keep method signatures and class structure, remove detailed implementation
+            import re
+            # Extract class definitions and method signatures
+            class_matches = re.findall(r'public\s+class\s+\w+[^{]*\{[^}]*\}', snippet, re.DOTALL)
+            method_matches = re.findall(r'public\s+[^{]*\{[^}]*\}', snippet, re.DOTALL)
+            compressed = '\n'.join(class_matches[:3] + method_matches[:5])  # Keep top 3 classes and 5 methods
+            snippet = compressed[:8000] if compressed else snippet[:8000]
+        else:
+            snippet = snippet[:6000]  # Original limit for smaller snippets
+            
         snippet_block += f"\n-- SNIPPET PATH: {path}\n{snippet}\n"
 
     # load prompt template (inline)
@@ -183,17 +482,18 @@ Relevant code snippets (context):
 
 Instructions:
 - Generate Java source files for this cluster using package name exactly: {{package}}.
-- Use Spring Boot 3, Java 17+ features acceptable, @RestController for web endpoints, @Service for service layer.
+- PRIORITY ORDER: 1) Services with business logic, 2) Controllers with HTTP endpoints, 3) DTOs/Models
 - CRITICAL: Keep method names and signatures EXACTLY as in the original code.
-- For controllers: Implement ALL HTTP endpoints from the original with proper REST responses (ResponseEntity<T>).
-- For services: Implement ALL methods from the original with same signatures.
+- For services: Implement ALL methods from the original with same signatures and business logic
+- For controllers: Implement ALL HTTP endpoints from the original with proper REST responses (ResponseEntity<T>)
+- Use Spring Boot 3, Java 17+ features acceptable, @RestController for web endpoints, @Service for service layer
 - If this is the first cluster (cluster_id=0), also generate: src/main/java/{{package|replace('.', '/')}}/MigratedApplication.java with @SpringBootApplication
-- Do NOT invent database schemas. Where DB knowledge is missing, add a TODO comment with link to original file path.
+- Do NOT invent database schemas. Where DB knowledge is missing, add a TODO comment with link to original file path
 - Output must be strictly in this format: 
   // FILE: src/main/java/{{package|replace('.', '/')}}/<ClassName>.java
   <Java source code>
   (repeat for each file)
-- At the end of the output produce a JSON block header named // MIGRATION_MAPPING with an array of objects { "old": "<old path>", "new": "<relative new path>", "notes": "<free text risk notes>" }.
+- At the end of the output produce a JSON block header named // MIGRATION_MAPPING with an array of objects { "old": "<old path>", "new": "<relative new path>", "notes": "<free text risk notes>" }
 
 Important:
 - Be conservative: prefer generating clear scaffolding and TODO comments than guessing unknowns.
@@ -286,7 +586,7 @@ def extract_compile_errors(mvn_output: str):
     return excerpt if excerpt else mvn_output[:4000]
 
 # ---------------- Main generation loop ----------------
-def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool = False):
+def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool = False, hierarchical: bool = False):
     kb = load_kb(kb_path)
     client = PersistentClient(path=str(kb_path / CHROMA_DIRNAME))
     coll = client.get_collection("code_snippets")
@@ -295,6 +595,18 @@ def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool 
 
     out_path.mkdir(parents=True, exist_ok=True)
     (out_path / "logs").mkdir(exist_ok=True)
+    
+    # Load existing progress if resuming
+    progress_file = out_path / "generation_progress.json"
+    completed_clusters = set()
+    if progress_file.exists():
+        try:
+            progress_data = json.loads(progress_file.read_text())
+            completed_clusters = set(progress_data.get("completed_clusters", []))
+            logging.info("Resuming generation: %d clusters already completed", len(completed_clusters))
+        except Exception as e:
+            logging.warning("Failed to load progress file: %s", e)
+    
     mapping = []
 
     clusters = kb.get("clusters", [])
@@ -303,6 +615,12 @@ def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool 
     logging.info("Starting generation for %d clusters", len(clusters))
     for ci, cluster in enumerate(tqdm(clusters, desc="clusters")):
         cluster_id = cluster.get("cluster_id", ci)
+        
+        # Skip if already completed
+        if cluster_id in completed_clusters:
+            logging.info("Skipping cluster %s (already completed)", cluster_id)
+            continue
+            
         files_in_cluster = cluster.get("files", [])
         logging.info("Generating cluster %s with %d files", cluster_id, len(files_in_cluster))
 
@@ -326,51 +644,86 @@ def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool 
         query_text = "\n".join(q_parts)[:3000]
 
         snippets = retrieve_snippets(coll, query_text, n=RETRIEVE_K)
-        logging.info("🔍 Retrieved %d code snippets for cluster %s", len(snippets), cluster_id)
-        for i, snippet in enumerate(snippets):
+        logging.info("Retrieved %d code snippets for cluster %s", len(snippets), cluster_id)
+        
+        # Apply smart filtering to reduce prompt size
+        filtered_snippets = filter_relevant_snippets(snippets, files_in_cluster, max_snippets=8)
+        
+        for i, snippet in enumerate(filtered_snippets):
             meta = snippet.get("meta", {})
             path = meta.get("path", "<unknown>")
             doc_length = len(snippet.get("doc", ""))
-            logging.info("   📄 Snippet %d: %s (%d chars)", i+1, path, doc_length)
+            logging.info("   Snippet %d: %s (%d chars)", i+1, path, doc_length)
         
-        prompt = make_cluster_prompt(cluster, cluster_id, summaries, snippets)
+        prompt = make_cluster_prompt(cluster, cluster_id, summaries, filtered_snippets)
+        
+        # Check prompt size and compress if needed
+        if len(prompt) > MAX_PROMPT_SIZE:
+            logging.warning("Prompt size (%d chars) exceeds limit (%d), compressing...", len(prompt), MAX_PROMPT_SIZE)
+            prompt = compress_prompt(prompt, MAX_PROMPT_SIZE)
+            logging.info("Compressed prompt to %d chars", len(prompt))
 
-        # call Gemini to generate
-        try:
-            logging.info("📤 Sending prompt to Gemini for cluster %s (prompt length: %d chars)", cluster_id, len(prompt))
-            logging.info("📋 Prompt preview: %s...", prompt[:200])
-            gen_text = gemini.generate(prompt)
-            logging.info("📥 Received response from Gemini for cluster %s (response length: %d chars)", cluster_id, len(gen_text))
-            logging.info("📄 Response preview: %s...", gen_text[:300])
-        except Exception as e:
-            logging.error("Gemini generation failed for cluster %s: %s", cluster_id, e)
-            continue
+        # Choose generation method
+        if hierarchical:
+            logging.info("Using hierarchical generation for cluster %s", cluster_id)
+            try:
+                files = generate_cluster_hierarchically(cluster, cluster_id, summaries, filtered_snippets, gemini)
+                mapping_json = None  # Hierarchical doesn't generate mapping JSON yet
+                logging.info("Hierarchical generation produced %d files for cluster %s", len(files), cluster_id)
+            except Exception as e:
+                logging.error("Hierarchical generation failed for cluster %s: %s", cluster_id, e)
+                continue
+        else:
+            # Traditional one-shot generation
+            try:
+                logging.info("Sending prompt to Gemini for cluster %s (prompt length: %d chars)", cluster_id, len(prompt))
+                logging.info("Prompt preview: %s...", prompt[:200])
+                gen_text = gemini.generate(prompt)
+                logging.info("📥 Received response from Gemini for cluster %s (response length: %d chars)", cluster_id, len(gen_text))
+                logging.info("Response preview: %s...", gen_text[:300])
+                
+                files, mapping_json = parse_generated_files(gen_text)
+                logging.info("Parsed %d files from Gemini response for cluster %s", len(files), cluster_id)
+                
+                if not files:
+                    logging.warning("No files parsed from generator output for cluster %s. Saving raw output.", cluster_id)
+                    (out_path / "logs" / f"cluster_{cluster_id}_raw.txt").write_text(gen_text)
+                    # Try to extract any Java files even if parsing failed
+                    import re
+                    java_files = re.findall(r'// FILE: (.+?\.java)\n(.*?)(?=\n// FILE:|\n// MIGRATION_MAPPING|\Z)', gen_text, re.DOTALL)
+                    if java_files:
+                        for file_path, content in java_files:
+                            target = out_path / file_path.strip()
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_text(content.strip(), encoding="utf-8")
+                            logging.info("Extracted file: %s", file_path)
+                    continue
+                    
+            except Exception as e:
+                logging.error("Gemini generation failed for cluster %s: %s", cluster_id, e)
+                continue
 
-        files, mapping_json = parse_generated_files(gen_text)
-        logging.info("🔍 Parsed %d files from Gemini response for cluster %s", len(files), cluster_id)
+        # Log generated files
         for i, (file_path, content) in enumerate(files):
-            logging.info("   📁 File %d: %s (%d lines)", i+1, file_path, len(content.splitlines()))
-        
-        if not files:
-            logging.warning("No files parsed from generator output for cluster %s. Saving raw output.", cluster_id)
-            (out_path / "logs" / f"cluster_{cluster_id}_raw.txt").write_text(gen_text)
-            # Try to extract any Java files even if parsing failed
-            import re
-            java_files = re.findall(r'// FILE: (.+?\.java)\n(.*?)(?=\n// FILE:|\n// MIGRATION_MAPPING|\Z)', gen_text, re.DOTALL)
-            if java_files:
-                for file_path, content in java_files:
-                    target = out_path / file_path.strip()
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(content.strip(), encoding="utf-8")
-                    logging.info("Extracted file: %s", file_path)
-            continue
+            logging.info("   File %d: %s (%d lines)", i+1, file_path, len(content.splitlines()))
 
         # write files to a per-cluster package folder
         created_files = write_files_to_output(out_path, files, cluster_package_root=f"cluster_{cluster_id}")
-        logging.info("✅ Successfully wrote %d files for cluster %s", len(created_files), cluster_id)
+        logging.info("Successfully wrote %d files for cluster %s", len(created_files), cluster_id)
+        
         # record mapping
         map_entry = {"cluster_id": cluster_id, "created_files": created_files, "raw_mapping": mapping_json, "notes": ""}
         mapping.append(map_entry)
+        
+        # Mark cluster as completed and save progress
+        completed_clusters.add(cluster_id)
+        progress_data = {
+            "completed_clusters": list(completed_clusters),
+            "last_updated": str(__import__("datetime").datetime.now(__import__("datetime").timezone.utc)),
+            "total_clusters": len(clusters)
+        }
+        progress_file.write_text(json.dumps(progress_data, indent=2))
+        logging.info("💾 Progress saved: %d/%d clusters completed", len(completed_clusters), len(clusters))
 
         # Optional compile + repair loop
         if not skip_compile:
@@ -442,6 +795,7 @@ def parse_args():
     p.add_argument("--kb", required=True, help="Path to knowledge_base (output of Phase 1)")
     p.add_argument("--out", required=True, help="Path to output Spring project folder")
     p.add_argument("--skip-compile", action="store_true", help="Skip maven compile & repair steps")
+    p.add_argument("--hierarchical", action="store_true", help="Use hierarchical generation (recommended for large projects)")
     return p.parse_args()
 
 if __name__ == "__main__":
@@ -456,4 +810,4 @@ if __name__ == "__main__":
         logging.error("Knowledge base folder not found: %s", kb)
         sys.exit(1)
     out.mkdir(parents=True, exist_ok=True)
-    generate(kb, out, gemini_key, skip_compile=args.skip_compile)
+    generate(kb, out, gemini_key, skip_compile=args.skip_compile, hierarchical=args.hierarchical)
