@@ -802,7 +802,7 @@ if __name__ == "__main__":
     args = parse_args()
     kb = Path(args.kb)
     out = Path(args.out)
-    gemini_key = "AIzaSyB500EX57Io-5RgyO3jxi5fLhamWo8Hd6Y"
+    gemini_key = "YOUR API KEY"
     if not gemini_key:
         logging.error("GEMINI_API_KEY environment variable is not set. Exiting.")
         sys.exit(1)
