@@ -1,0 +1,22 @@
+{
+  "nodes": [
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\CartService.java",
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\cart\\CartController.java",
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\pages\\HomePageController.java",
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\ProductService.java"
+  ],
+  "edges": [
+    {
+      "from": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\cart\\CartController.java",
+      "to": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\ProductService.java"
+    },
+    {
+      "from": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\cart\\CartController.java",
+      "to": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\CartService.java"
+    },
+    {
+      "from": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\pages\\HomePageController.java",
+      "to": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\ProductService.java"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "root": "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore",
+  "java_files_count": 4,
+  "java_files": [
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\cart\\CartController.java",
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\pages\\HomePageController.java",
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\CartService.java",
+    "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\ProductService.java"
+  ],
+  "generated_at": "2025-10-15T17:20:36.847434+00:00"
+}

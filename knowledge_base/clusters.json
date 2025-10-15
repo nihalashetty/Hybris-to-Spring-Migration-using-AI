@@ -1,0 +1,18 @@
+[
+  {
+    "cluster_id": 0,
+    "files": [
+      "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\CartService.java",
+      "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\cart\\CartController.java"
+    ],
+    "size": 2
+  },
+  {
+    "cluster_id": 1,
+    "files": [
+      "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\pages\\HomePageController.java",
+      "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\ProductService.java"
+    ],
+    "size": 2
+  }
+]

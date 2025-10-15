@@ -1,0 +1,242 @@
+{
+  "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\CartService.java": {
+    "summary": {
+      "package": "com.ministore.core.service",
+      "imports": [
+        "import java.util.Collections;",
+        "import java.util.LinkedHashMap;",
+        "import java.util.Map;"
+      ],
+      "classes": [
+        {
+          "name": "CartService",
+          "methods": [
+            {
+              "name": "add",
+              "params": [
+                "String productCode",
+                "int qty"
+              ],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 307,
+              "end_byte": 433
+            },
+            {
+              "name": "remove",
+              "params": [
+                "String productCode"
+              ],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 439,
+              "end_byte": 520
+            },
+            {
+              "name": "getItems",
+              "params": [],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 526,
+              "end_byte": 623
+            },
+            {
+              "name": "calculateTotal",
+              "params": [
+                "ProductService productService"
+              ],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 629,
+              "end_byte": 917
+            },
+            {
+              "name": "clear",
+              "params": [],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 923,
+              "end_byte": 973
+            }
+          ],
+          "fields": [
+            {
+              "name": "items",
+              "type": null
+            }
+          ],
+          "extends": [],
+          "implements": [],
+          "annotations": []
+        }
+      ],
+      "file_annotations": []
+    },
+    "snippet": "package com.ministore.core.service;\n\nimport java.util.Collections;\nimport java.util.LinkedHashMap;\nimport java.util.Map;\n\npublic class CartService {\n    // Simple in-memory cart keyed by sessionId (for simplicity use a single cart)\n    private final Map<String, Integer> items = new LinkedHashMap<>();\n\n    public void add(String productCode, int qty) {\n        items.put(productCode, items.getOrDefault(productCode, 0) + qty);\n    }\n\n    public void remove(String productCode) {\n        items.remove(productCode);\n    }\n\n    public Map<String, Integer> getItems() {\n        return Collections.unmodifiableMap(items);\n    }\n\n    public double calculateTotal(ProductService productService) {\n        double total = 0.0;\n        for (Map.Entry<String,Integer> e : items.entrySet()) {\n            productService.getByCode(e.getKey()).ifPresent(p -> total += p.price * e.getValue());\n        }\n        return total;\n    }\n\n    public void clear() {\n        items.clear();\n    }\n}",
+    "edges_count": 16
+  },
+  "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\cart\\CartController.java": {
+    "summary": {
+      "package": "com.ministore.storefront.controllers.cart",
+      "imports": [
+        "import com.ministore.core.service.CartService;",
+        "import com.ministore.core.service.ProductService;",
+        "import org.springframework.stereotype.Controller;",
+        "import org.springframework.web.bind.annotation.PostMapping;",
+        "import org.springframework.web.bind.annotation.GetMapping;",
+        "import org.springframework.web.bind.annotation.RequestParam;",
+        "import org.springframework.web.servlet.ModelAndView;",
+        "import java.util.Map;"
+      ],
+      "classes": [
+        {
+          "name": "CartController",
+          "methods": [
+            {
+              "name": "addToCart",
+              "params": [
+                "@RequestParam(\"code\") String code",
+                "@RequestParam(value=\"qty\", defaultValue=\"1\") int qty"
+              ],
+              "return_type": "ModelAndView",
+              "annotations": [
+                "@PostMapping(\"/add-to-cart\")"
+              ],
+              "start_byte": 639,
+              "end_byte": 1231
+            },
+            {
+              "name": "viewCart",
+              "params": [],
+              "return_type": "ModelAndView",
+              "annotations": [
+                "@GetMapping(\"/cart\")"
+              ],
+              "start_byte": 1237,
+              "end_byte": 1589
+            },
+            {
+              "name": "checkout",
+              "params": [],
+              "return_type": "ModelAndView",
+              "annotations": [
+                "@PostMapping(\"/checkout\")"
+              ],
+              "start_byte": 1595,
+              "end_byte": 1947
+            }
+          ],
+          "fields": [
+            {
+              "name": "productService",
+              "type": null
+            },
+            {
+              "name": "cartService",
+              "type": null
+            }
+          ],
+          "extends": [],
+          "implements": [],
+          "annotations": [
+            "@Controller"
+          ]
+        }
+      ],
+      "file_annotations": []
+    },
+    "snippet": "package com.ministore.storefront.controllers.cart;\n\nimport com.ministore.core.service.CartService;\nimport com.ministore.core.service.ProductService;\nimport org.springframework.stereotype.Controller;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.servlet.ModelAndView;\n\nimport java.util.Map;\n\n@Controller\npublic class CartController {\n\n    private final ProductService productService = new ProductService();\n    private final CartService cartService = new CartService();\n\n    @PostMapping(\"/add-to-cart\")\n    public ModelAndView addToCart(@RequestParam(\"code\") String code, @RequestParam(value=\"qty\", defaultValue=\"1\") int qty) {\n        productService.getByCode(code).ifPresent(p -> cartService.add(code, qty));\n        ModelAndView model = new ModelAndView(\"pages/cart\");\n        model.addObject(\"message\", \"Product added to cart\");\n        model.addObject(\"items\", cartService.getItems());\n        model.addObject(\"products\", productService.getAllProducts());\n        model.addObject(\"total\", cartService.calculateTotal(productService));\n        return model;\n    }\n\n    @GetMapping(\"/cart\")\n    public ModelAndView viewCart() {\n        ModelAndView model = new ModelAndView(\"pages/cart\");\n        model.addObject(\"items\", cartService.getItems());\n        model.addObject(\"products\", productService.getAllProducts());\n        model.addObject(\"total\", cartService.calculateTotal(productService));\n        return model;\n    }\n\n    @PostMapping(\"/checkout\")\n    public ModelAndView checkout() {\n        double total = cartService.calculateTotal(productService);\n        cartService.clear();\n        ModelAndView model = new ModelAndView(\"pages/checkout\");\n        model.addObject(\"total\", total);\n        model.addObject(\"message\", \"Checkout successful!\");\n        return model;\n    }\n}",
+    "edges_count": 17
+  },
+  "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorestorefront\\web\\src\\com\\ministore\\storefront\\controllers\\pages\\HomePageController.java": {
+    "summary": {
+      "package": "com.ministore.storefront.controllers.pages",
+      "imports": [
+        "import com.ministore.core.service.ProductService;",
+        "import com.ministore.core.service.ProductService.Product;",
+        "import org.springframework.stereotype.Controller;",
+        "import org.springframework.web.bind.annotation.GetMapping;",
+        "import org.springframework.web.servlet.ModelAndView;",
+        "import java.util.List;"
+      ],
+      "classes": [
+        {
+          "name": "HomePageController",
+          "methods": [
+            {
+              "name": "home",
+              "params": [],
+              "return_type": "ModelAndView",
+              "annotations": [
+                "@GetMapping(\"/\")"
+              ],
+              "start_byte": 472,
+              "end_byte": 723
+            }
+          ],
+          "fields": [
+            {
+              "name": "productService",
+              "type": null
+            }
+          ],
+          "extends": [],
+          "implements": [],
+          "annotations": [
+            "@Controller"
+          ]
+        }
+      ],
+      "file_annotations": []
+    },
+    "snippet": "package com.ministore.storefront.controllers.pages;\n\nimport com.ministore.core.service.ProductService;\nimport com.ministore.core.service.ProductService.Product;\nimport org.springframework.stereotype.Controller;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.servlet.ModelAndView;\n\nimport java.util.List;\n\n@Controller\npublic class HomePageController {\n\n    private final ProductService productService = new ProductService();\n\n    @GetMapping(\"/\")\n    public ModelAndView home() {\n        List<Product> products = productService.getAllProducts();\n        ModelAndView model = new ModelAndView(\"pages/home\");\n        model.addObject(\"products\", products);\n        return model;\n    }\n}",
+    "edges_count": 6
+  },
+  "C:\\Users\\nihal\\Downloads\\Knowledge base extractor\\project input\\hybris-advanced-ministore\\bin\\custom\\ministore\\ministorecore\\src\\com\\ministore\\core\\service\\ProductService.java": {
+    "summary": {
+      "package": "com.ministore.core.service",
+      "imports": [
+        "import java.util.ArrayList;",
+        "import java.util.List;",
+        "import java.util.Optional;"
+      ],
+      "classes": [
+        {
+          "name": "ProductService",
+          "methods": [
+            {
+              "name": "getAllProducts",
+              "params": [],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 800,
+              "end_byte": 886
+            },
+            {
+              "name": "getByCode",
+              "params": [
+                "String code"
+              ],
+              "return_type": null,
+              "annotations": [],
+              "start_byte": 892,
+              "end_byte": 1025
+            }
+          ],
+          "fields": [
+            {
+              "name": "catalog",
+              "type": null
+            }
+          ],
+          "extends": [],
+          "implements": [],
+          "annotations": []
+        }
+      ],
+      "file_annotations": []
+    },
+    "snippet": "package com.ministore.core.service;\n\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\n\npublic class ProductService {\n\n    public static class Product {\n        public final String code;\n        public final String name;\n        public final double price;\n\n        public Product(String code, String name, double price) {\n            this.code = code;\n            this.name = name;\n            this.price = price;\n        }\n    }\n\n    private final List<Product> catalog = new ArrayList<>();\n\n    public ProductService() {\n        // Seed with sample products\n        catalog.add(new Product(\"P001\", \"Test Product 1\", 49.99));\n        catalog.add(new Product(\"P002\", \"Test Product 2\", 79.50));\n        catalog.add(new Product(\"P003\", \"Test Product 3\", 19.95));\n    }\n\n    public List<Product> getAllProducts() {\n        return new ArrayList<>(catalog);\n    }\n\n    public Optional<Product> getByCode(String code) {\n        return catalog.stream().filter(p -> p.code.equals(code)).findFirst();\n    }\n}",
+    "edges_count": 9
+  }
+}
