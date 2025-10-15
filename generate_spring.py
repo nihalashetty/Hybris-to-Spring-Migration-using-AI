@@ -679,7 +679,7 @@ def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool 
                 logging.info("Sending prompt to Gemini for cluster %s (prompt length: %d chars)", cluster_id, len(prompt))
                 logging.info("Prompt preview: %s...", prompt[:200])
                 gen_text = gemini.generate(prompt)
-                logging.info("📥 Received response from Gemini for cluster %s (response length: %d chars)", cluster_id, len(gen_text))
+                logging.info("Received response from Gemini for cluster %s (response length: %d chars)", cluster_id, len(gen_text))
                 logging.info("Response preview: %s...", gen_text[:300])
                 
                 files, mapping_json = parse_generated_files(gen_text)
@@ -723,7 +723,7 @@ def generate(kb_path: Path, out_path: Path, gemini_key: str, skip_compile: bool 
             "total_clusters": len(clusters)
         }
         progress_file.write_text(json.dumps(progress_data, indent=2))
-        logging.info("💾 Progress saved: %d/%d clusters completed", len(completed_clusters), len(clusters))
+        logging.info("Progress saved: %d/%d clusters completed", len(completed_clusters), len(clusters))
 
         # Optional compile + repair loop
         if not skip_compile:
